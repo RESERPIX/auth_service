@@ -1,6 +1,7 @@
 version: '3.9'
 
 services:
+  # PostgreSQL база данных
   postgres:
     image: postgres:15
     container_name: auth_postgres
@@ -9,16 +10,174 @@ services:
       POSTGRES_USER: authuser
       POSTGRES_PASSWORD: authpass
       POSTGRES_DB: authdb
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
     ports: 
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U authuser -d authdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - auth_network
 
+  # Redis для кеша и сессий
   redis:
     image: redis:7-alpine
     container_name: auth_redis
+    restart: always
     ports:
-      - "6739:6739"
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./configs/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - auth_network
 
-volumes:
-  pgdata:
+  # NATS для message queue
+  nats:
+    image: nats:latest
+    container_name: auth_nats
+    restart: always
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+      - "6222:6222"
+    command: ["-js", "-m", "8222"]
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8222/varz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - auth_network
+
+  # Auth Service
+  auth-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: auth_service
+    restart: always
+    ports:
+      - "50051:50051"
+    environment:
+      - SERVER_HOST=0.0.0.0
+      - SERVER_PORT=50051
+      - SERVER_ENVIRONMENT=docker
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=authuser
+      - DATABASE_PASSWORD=authpass
+      - DATABASE_NAME=authdb
+      - REDIS_ADDR=redis:6379
+      - JWT_ACCESS_SECRET=your-super-secret-access-key-change-this-in-production
+      - JWT_REFRESH_SECRET=your-super-secret-refresh-key-change-this-in-production
+    volumes:
+      - ./configs:/app/configs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - auth_network
+    healthcheck:
+      test: ["CMD", "grpc_health_probe", "-addr=localhost:50051"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # API Gateway (KrakenD)
+  api-gateway:
+    image: devopsfaith/krakend:2.7
+    container_name: auth_gateway
+    restart: always
+    ports:
+      - "8080:8080"
+      - "8090:8090"
+    volumes:
+      - ./configs/krakend.json:/etc/krakend/krakend.json
+    command: ["run", "-d", "-c", "/etc/krakend/krakend.json"]
+    depends_on:
+      - auth-service
+    networks:
+      - auth_network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/__health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Мониторинг - Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: auth_prometheus
+    restart: always
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    networks:
+      - auth_network
+
+  # Мониторинг - Grafana
+  grafana:
+    image: grafana/grafana:latest
+    container_name: auth_grafana
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin123
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./configs/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./configs/grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - auth_network
+
+  # Jaeger для трейсинга
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: auth_jaeger
+    restart: always
+    ports:
+      - "16686:16686"
+      - "14268:14268"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    networks:
+      - auth_network
+
+  # Mailhog для тестирования email (только для разработки)
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: auth_mailhog
+    restart: always
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    profiles:
+      - dev
+    networks:
+      - auth_network
+

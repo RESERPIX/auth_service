@@ -4,27 +4,275 @@ package auth;
 option go_package = "github.com/RESERPIX/auth_service/internal/pb/";
 
 service AuthService {
+  // Основные методы аутентификации
   rpc Register (RegisterRequest) returns (RegisterResponse);
   rpc Login (LoginRequest) returns (LoginResponse);
+  rpc RefreshToken (RefreshTokenRequest) returns (RefreshTokenResponse);
+  rpc Logout (LogoutRequest) returns (LogoutResponse);
+  
+  // Верификация
+  rpc SendVerificationCode (SendVerificationCodeRequest) returns (SendVerificationCodeResponse);
+  rpc VerifyCode (VerifyCodeRequest) returns (VerifyCodeResponse);
+  
+  // Восстановление пароля
+  rpc RequestPasswordReset (RequestPasswordResetRequest) returns (RequestPasswordResetResponse);
+  rpc ResetPassword (ResetPasswordRequest) returns (ResetPasswordResponse);
+  
+  // 2FA
+  rpc EnableTwoFactor (EnableTwoFactorRequest) returns (EnableTwoFactorResponse);
+  rpc DisableTwoFactor (DisableTwoFactorRequest) returns (DisableTwoFactorResponse);
+  rpc VerifyTwoFactor (VerifyTwoFactorRequest) returns (VerifyTwoFactorResponse);
+  
+  // OAuth провайдеры
+  rpc LoginWithProvider (LoginWithProviderRequest) returns (LoginWithProviderResponse);
+  
+  // Управление пользователем
+  rpc GetUserProfile (GetUserProfileRequest) returns (GetUserProfileResponse);
+  rpc UpdateUserProfile (UpdateUserProfileRequest) returns (UpdateUserProfileResponse);
+  rpc ChangePassword (ChangePasswordRequest) returns (ChangePasswordResponse);
+  
+  // Валидация токенов
+  rpc ValidateToken (ValidateTokenRequest) returns (ValidateTokenResponse);
 }
 
+// Регистрация
 message RegisterRequest {
   string full_name = 1;
   string email = 2;
-  string password = 3;
+  string phone = 3; // опционально
+  string password = 4;
+  string confirm_password = 5;
+  bool accept_terms = 6;
+  string recaptcha_token = 7; // для защиты от ботов
+  string referral_code = 8; // опционально
 }
 
 message RegisterResponse {
   string user_id = 1;
   string message = 2;
+  bool requires_verification = 3;
+  string verification_type = 4; // email, sms
 }
 
+// Авторизация
 message LoginRequest {
   string login = 1;    // email или телефон
   string password = 2;
+  string recaptcha_token = 3;
+  bool remember_me = 4;
+  string device_id = 5; // для отслеживания устройств
+  string user_agent = 6;
+  string ip_address = 7;
 }
 
 message LoginResponse {
   string access_token = 1;
-  uint64 expires_in = 2; // опционально добавишь на сервере
+  string refresh_token = 2;
+  uint64 access_expires_in = 3;
+  uint64 refresh_expires_in = 4;
+  UserProfile user = 5;
+  bool requires_2fa = 6;
+  string session_id = 7;
+}
+
+// Обновление токенов
+message RefreshTokenRequest {
+  string refresh_token = 1;
+}
+
+message RefreshTokenResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  uint64 access_expires_in = 3;
+  uint64 refresh_expires_in = 4;
+}
+
+// Выход
+message LogoutRequest {
+  string refresh_token = 1;
+  bool logout_all_devices = 2;
+}
+
+message LogoutResponse {
+  string message = 1;
+}
+
+// Отправка кода верификации
+message SendVerificationCodeRequest {
+  string contact = 1; // email или телефон
+  string type = 2;    // email, sms
+  string purpose = 3; // registration, password_reset, 2fa
+}
+
+message SendVerificationCodeResponse {
+  string message = 1;
+  uint64 expires_in = 2; // время жизни кода в секундах
+  bool rate_limited = 3; // если превышен лимит отправки
+}
+
+// Верификация кода
+message VerifyCodeRequest {
+  string contact = 1;
+  string code = 2;
+  string type = 3;    // email, sms
+  string purpose = 4; // registration, password_reset, 2fa
+}
+
+message VerifyCodeResponse {
+  bool success = 1;
+  string message = 2;
+  string token = 3; // временный токен для завершения операции
+}
+
+// Запрос сброса пароля
+message RequestPasswordResetRequest {
+  string email = 1;
+  string recaptcha_token = 2;
+}
+
+message RequestPasswordResetResponse {
+  string message = 1;
+}
+
+// Сброс пароля
+message ResetPasswordRequest {
+  string reset_token = 1;
+  string new_password = 2;
+  string confirm_password = 3;
+}
+
+message ResetPasswordResponse {
+  string message = 1;
+  bool success = 2;
+}
+
+// Включение 2FA
+message EnableTwoFactorRequest {
+  string password = 1; // подтверждение текущего пароля
+}
+
+message EnableTwoFactorResponse {
+  string qr_code_url = 1; // для Google Authenticator
+  string secret_key = 2;
+  repeated string backup_codes = 3;
+}
+
+// Отключение 2FA
+message DisableTwoFactorRequest {
+  string password = 1;
+  string code = 2; // код из приложения аутентификатора
+}
+
+message DisableTwoFactorResponse {
+  string message = 1;
+  bool success = 2;
+}
+
+// Верификация 2FA
+message VerifyTwoFactorRequest {
+  string session_token = 1; // временный токен после первого этапа входа
+  string code = 2;
+  string backup_code = 3; // альтернативно коду
+}
+
+message VerifyTwoFactorResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  uint64 access_expires_in = 3;
+  uint64 refresh_expires_in = 4;
+  UserProfile user = 5;
+}
+
+// Вход через внешние провайдеры
+message LoginWithProviderRequest {
+  string provider = 1; // yandex, mail, vk, gosuslugi
+  string code = 2;     // authorization code от провайдера
+  string state = 3;    // для защиты от CSRF
+  string redirect_uri = 4;
+}
+
+message LoginWithProviderResponse {
+  string access_token = 1;
+  string refresh_token = 2;
+  uint64 access_expires_in = 3;
+  uint64 refresh_expires_in = 4;
+  UserProfile user = 5;
+  bool is_new_user = 6; // новый пользователь или существующий
+}
+
+// Профиль пользователя
+message UserProfile {
+  string id = 1;
+  string full_name = 2;
+  string email = 3;
+  string phone = 4;
+  string role = 5;
+  bool is_email_verified = 6;
+  bool is_phone_verified = 7;
+  bool two_factor_enabled = 8;
+  string provider = 9;
+  string last_login_at = 10;
+  string created_at = 11;
+}
+
+message GetUserProfileRequest {
+  // пустой - информация берется из токена
+}
+
+message GetUserProfileResponse {
+  UserProfile user = 1;
+}
+
+// Обновление профиля
+message UpdateUserProfileRequest {
+  string full_name = 1;
+  string phone = 2;
+  // email отдельно, т.к. требует верификации
+}
+
+message UpdateUserProfileResponse {
+  UserProfile user = 1;
+  string message = 2;
+}
+
+// Смена пароля
+message ChangePasswordRequest {
+  string current_password = 1;
+  string new_password = 2;
+  string confirm_password = 3;
+}
+
+message ChangePasswordResponse {
+  string message = 1;
+  bool success = 2;
+}
+
+// Валидация токена
+message ValidateTokenRequest {
+  string access_token = 1;
+}
+
+message ValidateTokenResponse {
+  bool valid = 1;
+  UserProfile user = 2;
+  repeated string permissions = 3; // роли и права
+}
+
+// Общие типы ошибок
+enum ErrorCode {
+  SUCCESS = 0;
+  INVALID_CREDENTIALS = 1;
+  USER_NOT_FOUND = 2;
+  EMAIL_ALREADY_EXISTS = 3;
+  PHONE_ALREADY_EXISTS = 4;
+  INVALID_PASSWORD = 5;
+  INVALID_CODE = 6;
+  CODE_EXPIRED = 7;
+  RATE_LIMITED = 8;
+  INVALID_TOKEN = 9;
+  TOKEN_EXPIRED = 10;
+  TWO_FACTOR_REQUIRED = 11;
+  INVALID_PROVIDER = 12;
+  VALIDATION_ERROR = 13;
+  INTERNAL_ERROR = 14;
 }

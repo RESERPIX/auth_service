@@ -1,0 +1,87 @@
+# configs/config.yaml
+server:
+  host: "0.0.0.0"
+  port: 50051
+  read_timeout: "30s"
+  write_timeout: "30s"
+  environment: "dev" # dev, prod, test
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "authuser"
+  password: "authpass"
+  name: "authdb"
+  ssl_mode: "disable"
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: "1h"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+  pool_size: 10
+  min_idle_conns: 2
+
+jwt:
+  access_secret: "your-super-secret-access-key-change-this-in-production"
+  refresh_secret: "your-super-secret-refresh-key-change-this-in-production"
+  access_ttl: "15m"
+  refresh_ttl: "24h"
+  two_factor_ttl: "5m"
+  password_reset_ttl: "1h"
+
+email:
+  smtp_host: "smtp.gmail.com"
+  smtp_port: 587
+  smtp_user: "your-email@gmail.com"
+  smtp_password: "your-app-password"
+  from_address: "noreply@yourplatform.com"
+  from_name: "Your Platform"
+
+sms:
+  provider: "sms_ru" # sms_ru, twilio
+  api_key: "your-sms-api-key"
+  api_secret: "your-sms-api-secret"
+  from_name: "Platform"
+
+oauth:
+  yandex:
+    client_id: "your-yandex-client-id"
+    client_secret: "your-yandex-client-secret"
+    redirect_url: "http://localhost:3000/auth/yandex/callback"
+    scopes: "login:email login:info"
+  
+  mail:
+    client_id: "your-mail-client-id"
+    client_secret: "your-mail-client-secret"
+    redirect_url: "http://localhost:3000/auth/mail/callback"
+    scopes: "userinfo"
+  
+  vk:
+    client_id: "your-vk-client-id"
+    client_secret: "your-vk-client-secret"
+    redirect_url: "http://localhost:3000/auth/vk/callback"
+    scopes: "email"
+  
+  gosuslugi:
+    client_id: "your-gosuslugi-client-id"
+    client_secret: "your-gosuslugi-client-secret"
+    redirect_url: "http://localhost:3000/auth/gosuslugi/callback"
+    scopes: "openid fullname email mobile"
+
+security:
+  recaptcha_secret: "your-recaptcha-secret-key"
+  bcrypt_cost: 12
+  max_login_attempts: 5
+  login_attempt_window: "15m"
+  code_length: 6
+  code_ttl: "5m"
+  max_code_attempts: 3
+  rate_limit_requests: 100
+  rate_limit_window: "1m"
+
+logging:
+  level: "info" # debug, info, warn, error
+  format: "json" # json, text
