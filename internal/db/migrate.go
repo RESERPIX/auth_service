@@ -3,7 +3,7 @@ package db
 import (
 	"log"
 
-	"github.com/RESERPIX/auth-service/internal/app"
+	"github.com/RESERPIX/auth_service/internal/app"
 	"gorm.io/gorm"
 )
 
