@@ -8,15 +8,16 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	JWT      JWTConfig      `mapstructure:"jwt"`
-	Email    EmailConfig    `mapstructure:"email"`
-	SMS      SMSConfig      `mapstructure:"sms"`
-	OAuth    OAuthConfig    `mapstructure:"oauth"`
-	Security SecurityConfig `mapstructure:"security"`
-	Logging  LoggingConfig  `mapstructure:"logging"`
+	Server    ServerConfig    `mapstructure:"server"`
+	Database  DatabaseConfig  `mapstructure:"database"`
+	Redis     RedisConfig     `mapstructure:"redis"`
+	JWT       JWTConfig       `mapstructure:"jwt"`
+	Email     EmailConfig     `mapstructure:"email"`
+	SMS       SMSConfig       `mapstructure:"sms"`
+	OAuth     OAuthConfig     `mapstructure:"oauth"`
+	Security  SecurityConfig  `mapstructure:"security"`
+	Middleware MiddlewareConfig `mapstructure:"middleware"`
+	Logging   LoggingConfig   `mapstructure:"logging"`
 }
 
 type ServerConfig struct {
@@ -88,6 +89,9 @@ type OAuthProviderConfig struct {
 
 type SecurityConfig struct {
 	RecaptchaSecret    string        `mapstructure:"recaptcha_secret"`
+	RecaptchaSiteKey   string        `mapstructure:"recaptcha_site_key"`
+	RecaptchaEnabled   bool          `mapstructure:"recaptcha_enabled"`
+	RecaptchaMinScore  float64       `mapstructure:"recaptcha_min_score"`
 	BCryptCost         int           `mapstructure:"bcrypt_cost"`
 	MaxLoginAttempts   int           `mapstructure:"max_login_attempts"`
 	LoginAttemptWindow time.Duration `mapstructure:"login_attempt_window"`
@@ -96,6 +100,16 @@ type SecurityConfig struct {
 	MaxCodeAttempts    int           `mapstructure:"max_code_attempts"`
 	RateLimitRequests  int           `mapstructure:"rate_limit_requests"`
 	RateLimitWindow    time.Duration `mapstructure:"rate_limit_window"`
+	RateLimitPerMinute int           `mapstructure:"rate_limit_per_minute"`
+	RateLimitPerHour   int           `mapstructure:"rate_limit_per_hour"`
+	RateLimitPerDay    int           `mapstructure:"rate_limit_per_day"`
+}
+
+type MiddlewareConfig struct {
+	AuditEnabled      bool     `mapstructure:"audit_enabled"`
+	AuditLogToDB      bool     `mapstructure:"audit_log_to_db"`
+	AuditLogToConsole bool     `mapstructure:"audit_log_to_console"`
+	AuditExcludeMethods []string `mapstructure:"audit_exclude_methods"`
 }
 
 type LoggingConfig struct {

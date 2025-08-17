@@ -15,7 +15,7 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ../scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U authuser -d authdb"]
       interval: 10s
@@ -33,7 +33,7 @@ services:
       - "6379:6379"
     volumes:
       - redis_data:/data
-      - ./configs/redis.conf:/usr/local/etc/redis/redis.conf
+      - ../configs/redis.conf:/usr/local/etc/redis/redis.conf
     command: redis-server /usr/local/etc/redis/redis.conf
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -64,7 +64,7 @@ services:
   # Auth Service
   auth-service:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile
     container_name: auth_service
     restart: always
@@ -83,7 +83,7 @@ services:
       - JWT_ACCESS_SECRET=your-super-secret-access-key-change-this-in-production
       - JWT_REFRESH_SECRET=your-super-secret-refresh-key-change-this-in-production
     volumes:
-      - ./configs:/app/configs
+      - ../configs:/app/configs
     depends_on:
       postgres:
         condition: service_healthy
@@ -107,7 +107,7 @@ services:
       - "8080:8080"
       - "8090:8090"
     volumes:
-      - ./configs/krakend.json:/etc/krakend/krakend.json
+      - ../configs/krakend.json:/etc/krakend/krakend.json
     command: ["run", "-d", "-c", "/etc/krakend/krakend.json"]
     depends_on:
       - auth-service
@@ -127,7 +127,7 @@ services:
     ports:
       - "9090:9090"
     volumes:
-      - ./configs/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ../configs/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -150,8 +150,8 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin123
     volumes:
       - grafana_data:/var/lib/grafana
-      - ./configs/grafana/dashboards:/etc/grafana/provisioning/dashboards
-      - ./configs/grafana/datasources:/etc/grafana/provisioning/datasources
+      - ../configs/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ../configs/grafana/datasources:/etc/grafana/provisioning/datasources
     networks:
       - auth_network
 
@@ -181,3 +181,31 @@ services:
     networks:
       - auth_network
 
+   # pgAdmin для управления PostgreSQL (только для разработки)
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: auth_pgadmin
+    restart: always
+    ports:
+      - "5050:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    profiles:
+      - dev
+    networks:
+      - auth_network
+
+volumes:
+  pgdata:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  auth_network:
+    driver: bridge

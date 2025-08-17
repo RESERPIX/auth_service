@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/RESERPIX/auth_service/internal/app"
 	"github.com/RESERPIX/auth_service/internal/config"
 	"github.com/RESERPIX/auth_service/pkg/utils"
 	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -35,6 +35,7 @@ type AuthService struct {
 	emailService *EmailService
 	smsService   *SMSService
 	oauthService *OAuthService
+	logger       *zap.Logger
 }
 
 func NewAuthService(
@@ -44,6 +45,7 @@ func NewAuthService(
 	emailService *EmailService,
 	smsService *SMSService,
 	oauthService *OAuthService,
+	logger *zap.Logger,
 ) *AuthService {
 	return &AuthService{
 		db:           db,
@@ -52,6 +54,7 @@ func NewAuthService(
 		emailService: emailService,
 		smsService:   smsService,
 		oauthService: oauthService,
+		logger:       logger,
 	}
 }
 
@@ -81,7 +84,7 @@ func (s *AuthService) Register(ctx context.Context, req RegisterRequest) (*Regis
 	}
 
 	// Создание пользователя
-	user := &app.User{
+	user := &User{
 		FullName: req.FullName,
 		Email:    req.Email,
 		Phone:    req.Phone,
@@ -108,7 +111,7 @@ func (s *AuthService) Register(ctx context.Context, req RegisterRequest) (*Regis
 	}
 
 	return &RegisterResponse{
-		UserID:               fmt.Sprintf("%d", user.ID),
+		UserId:               fmt.Sprintf("%d", user.ID),
 		Message:              "Registration successful. Please verify your " + verificationType,
 		RequiresVerification: true,
 		VerificationType:     verificationType,
@@ -214,7 +217,7 @@ func (s *AuthService) sendVerificationCode(ctx context.Context, contact, codeTyp
 	}
 
 	// Сохранение кода в БД
-	verificationCode := &app.VerificationCode{
+	verificationCode := &VerificationCode{
 		Code:      code,
 		Type:      codeType,
 		Purpose:   purpose,
@@ -244,7 +247,7 @@ func (s *AuthService) sendVerificationCode(ctx context.Context, contact, codeTyp
 // Верификация кода
 func (s *AuthService) VerifyCode(ctx context.Context, req VerifyCodeRequest) (*VerifyCodeResponse, error) {
 	// Поиск кода
-	var verificationCode app.VerificationCode
+	var verificationCode VerificationCode
 	if err := s.db.Where("code = ? AND type = ? AND purpose = ? AND is_used = false AND expires_at > ?",
 		req.Code, req.Type, req.Purpose, time.Now()).First(&verificationCode).Error; err != nil {
 		return nil, ErrInvalidCode
@@ -258,7 +261,7 @@ func (s *AuthService) VerifyCode(ctx context.Context, req VerifyCodeRequest) (*V
 
 	// Обновление статуса верификации пользователя
 	if verificationCode.UserID > 0 {
-		var user app.User
+		var user User
 		if err := s.db.First(&user, verificationCode.UserID).Error; err == nil {
 			now := time.Now()
 			switch req.Type {
@@ -289,14 +292,14 @@ func (s *AuthService) VerifyCode(ctx context.Context, req VerifyCodeRequest) (*V
 // Обновление токенов
 func (s *AuthService) RefreshToken(ctx context.Context, refreshToken string) (*RefreshTokenResponse, error) {
 	// Поиск сессии
-	var session app.UserSession
+	var session UserSession
 	if err := s.db.Where("refresh_token = ? AND is_active = true AND expires_at > ?",
 		refreshToken, time.Now()).First(&session).Error; err != nil {
 		return nil, ErrInvalidToken
 	}
 
 	// Загрузка пользователя
-	var user app.User
+	var user User
 	if err := s.db.Preload("Role").First(&user, session.UserID).Error; err != nil {
 		return nil, ErrUserNotFound
 	}
@@ -326,14 +329,14 @@ func (s *AuthService) RefreshToken(ctx context.Context, refreshToken string) (*R
 
 // Выход из системы
 func (s *AuthService) Logout(ctx context.Context, refreshToken string, logoutAllDevices bool) error {
-	var session app.UserSession
+	var session UserSession
 	if err := s.db.Where("refresh_token = ?", refreshToken).First(&session).Error; err != nil {
 		return nil // Токен уже недействителен
 	}
 
 	if logoutAllDevices {
 		// Деактивация всех сессий пользователя
-		s.db.Model(&app.UserSession{}).Where("user_id = ?", session.UserID).Update("is_active", false)
+		s.db.Model(&UserSession{}).Where("user_id = ?", session.UserID).Update("is_active", false)
 	} else {
 		// Деактивация только текущей сессии
 		session.IsActive = false
@@ -360,7 +363,7 @@ func (s *AuthService) ValidateToken(ctx context.Context, accessToken string) (*V
 	}
 
 	// Загрузка пользователя
-	var user app.User
+	var user User
 	if err := s.db.Preload("Role").First(&user, claims.UserID).Error; err != nil {
 		return nil, ErrUserNotFound
 	}
@@ -405,7 +408,7 @@ func (s *AuthService) validateRegisterRequest(req RegisterRequest) error {
 func (s *AuthService) checkUserExists(email string, phone *string) error {
 	var count int64
 
-	query := s.db.Model(&app.User{}).Where("email = ?", email)
+	query := s.db.Model(&User{}).Where("email = ?", email)
 	if phone != nil && *phone != "" {
 		query = query.Or("phone = ?", *phone)
 	}
@@ -419,8 +422,8 @@ func (s *AuthService) checkUserExists(email string, phone *string) error {
 	return nil
 }
 
-func (s *AuthService) findUserByLogin(login string) (*app.User, error) {
-	var user app.User
+func (s *AuthService) findUserByLogin(login string) (*User, error) {
+	var user User
 	if err := s.db.Preload("Role").
 		Where("email = ? OR phone = ?", login, login).
 		First(&user).Error; err != nil {
@@ -429,7 +432,7 @@ func (s *AuthService) findUserByLogin(login string) (*app.User, error) {
 	return &user, nil
 }
 
-func (s *AuthService) createTokenPair(user *app.User) (string, string, error) {
+func (s *AuthService) createTokenPair(user *User) (string, string, error) {
 	// Access token
 	accessToken, err := utils.GenerateJWT(
 		user.ID,
@@ -455,8 +458,8 @@ func (s *AuthService) createTokenPair(user *app.User) (string, string, error) {
 	return accessToken, refreshToken, nil
 }
 
-func (s *AuthService) createUserSession(userID uint, refreshToken, userAgent, ipAddress string) (*app.UserSession, error) {
-	session := &app.UserSession{
+func (s *AuthService) createUserSession(userID uint, refreshToken, userAgent, ipAddress string) (*UserSession, error) {
+	session := &UserSession{
 		UserID:       userID,
 		RefreshToken: refreshToken,
 		UserAgent:    userAgent,
@@ -540,7 +543,7 @@ func (s *AuthService) clearLoginAttempts(ctx context.Context, login string) {
 }
 
 func (s *AuthService) recordAuditLog(userID uint, action, details, ipAddress, userAgent string) {
-	auditLog := &app.UserAuditLog{
+	auditLog := &UserAuditLog{
 		Action:    action,
 		Details:   details,
 		IPAddress: ipAddress,
@@ -556,7 +559,7 @@ func (s *AuthService) recordAuditLog(userID uint, action, details, ipAddress, us
 	s.db.Create(auditLog)
 }
 
-func (s *AuthService) mapUserToProfile(user *app.User) *UserProfile {
+func (s *AuthService) mapUserToProfile(user *User) *UserProfile {
 	profile := &UserProfile{
 		ID:               fmt.Sprintf("%d", user.ID),
 		FullName:         user.FullName,
@@ -624,7 +627,7 @@ type RegisterRequest struct {
 }
 
 type RegisterResponse struct {
-	UserID               string
+	UserId               string
 	Message              string
 	RequiresVerification bool
 	VerificationType     string
@@ -695,4 +698,319 @@ type UserProfile struct {
 	Provider         string
 	LastLoginAt      string
 	CreatedAt        string
+}
+
+// RequestPasswordReset запрашивает сброс пароля
+func (s *AuthService) RequestPasswordReset(ctx context.Context, email, recaptchaToken string) (*RequestPasswordResetResponse, error) {
+	// Проверка reCAPTCHA
+	if s.config.Server.Environment == "prod" {
+		if err := s.validateRecaptcha(recaptchaToken); err != nil {
+			return nil, err
+		}
+	}
+
+	// Находим пользователя
+	user, err := s.findUserByEmail(email)
+	if err != nil {
+		// Не раскрываем информацию о существовании пользователя
+		return &RequestPasswordResetResponse{
+			Message: "If the email exists, a password reset link has been sent",
+		}, nil
+	}
+
+	// Генерируем токен для сброса пароля
+	resetToken, err := s.createPasswordResetToken(user.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create reset token: %w", err)
+	}
+
+	// Отправляем email для сброса пароля
+	if err := s.emailService.SendPasswordResetEmail(email, resetToken); err != nil {
+		s.logger.Error("Failed to send password reset email", zap.Error(err))
+		// Не возвращаем ошибку, чтобы не раскрывать информацию
+	}
+
+	return &RequestPasswordResetResponse{
+		Message: "If the email exists, a password reset link has been sent",
+	}, nil
+}
+
+// ResetPassword сбрасывает пароль пользователя
+func (s *AuthService) ResetPassword(ctx context.Context, resetToken, newPassword, confirmPassword string) (*ResetPasswordResponse, error) {
+	// Проверяем, что пароли совпадают
+	if newPassword != confirmPassword {
+		return nil, fmt.Errorf("passwords do not match")
+	}
+
+	// Валидируем новый пароль
+	if errors := utils.ValidatePassword(newPassword); len(errors) > 0 {
+		return nil, fmt.Errorf("invalid password: %v", errors)
+	}
+
+	// Валидируем токен
+	claims, err := utils.ValidateJWT(resetToken, s.config.JWT.AccessSecret)
+	if err != nil {
+		return nil, fmt.Errorf("invalid reset token: %w", err)
+	}
+
+	// Находим пользователя
+	var user User
+	if err := s.db.First(&user, claims.UserID).Error; err != nil {
+		return nil, fmt.Errorf("user not found: %w", err)
+	}
+
+	// Хешируем новый пароль
+	hashedPassword, err := utils.HashPassword(newPassword)
+	if err != nil {
+		return nil, fmt.Errorf("failed to hash password: %w", err)
+	}
+
+	// Обновляем пароль
+	if err := s.db.Model(&user).Update("password", hashedPassword).Error; err != nil {
+		return nil, fmt.Errorf("failed to update password: %w", err)
+	}
+
+	// Логируем действие
+	s.recordAuditLog(user.ID, "password_reset", "Password reset successful", "", "")
+
+	return &ResetPasswordResponse{
+		Message: "Password has been reset successfully",
+		Success: true,
+	}, nil
+}
+
+// EnableTwoFactor включает двухфакторную аутентификацию
+func (s *AuthService) EnableTwoFactor(ctx context.Context, password string) (*EnableTwoFactorResponse, error) {
+	// TODO: Получить userID из контекста (из токена)
+	// Пока возвращаем заглушку
+	return &EnableTwoFactorResponse{
+		QRCodeURL:   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+		SecretKey:   "JBSWY3DPEHPK3PXP",
+		BackupCodes: []string{"123456", "234567", "345678", "456789", "567890"},
+	}, nil
+}
+
+// DisableTwoFactor отключает двухфакторную аутентификацию
+func (s *AuthService) DisableTwoFactor(ctx context.Context, password, code string) (*DisableTwoFactorResponse, error) {
+	// TODO: Реализовать проверку пароля и кода
+	return &DisableTwoFactorResponse{
+		Message: "Two-factor authentication has been disabled",
+		Success: true,
+	}, nil
+}
+
+// VerifyTwoFactor проверяет код двухфакторной аутентификации
+func (s *AuthService) VerifyTwoFactor(ctx context.Context, sessionToken, code, backupCode string) (*VerifyTwoFactorResponse, error) {
+	// TODO: Реализовать проверку 2FA
+	// Пока возвращаем заглушку
+	return &VerifyTwoFactorResponse{
+		AccessToken:      "access_token_2fa",
+		RefreshToken:     "refresh_token_2fa",
+		AccessExpiresIn:  uint64(s.config.JWT.AccessTTL.Seconds()),
+		RefreshExpiresIn: uint64(s.config.JWT.RefreshTTL.Seconds()),
+		User: &UserProfile{
+			ID:               "1",
+			FullName:         "Test User",
+			Email:            "test@example.com",
+			Phone:            "",
+			Role:             "user",
+			IsEmailVerified:  true,
+			IsPhoneVerified:  false,
+			TwoFactorEnabled: true,
+			Provider:         "local",
+			LastLoginAt:      time.Now().Format(time.RFC3339),
+			CreatedAt:        time.Now().Format(time.RFC3339),
+		},
+	}, nil
+}
+
+// LoginWithProvider выполняет вход через OAuth провайдеров
+func (s *AuthService) LoginWithProvider(ctx context.Context, provider, code, state, redirectURI string) (*LoginWithProviderResponse, error) {
+	// Получаем информацию о пользователе от OAuth провайдера
+	userInfo, err := s.oauthService.ExchangeCodeForUserInfo(ctx, provider, code, state, redirectURI)
+	if err != nil {
+		return nil, fmt.Errorf("failed to exchange OAuth code: %w", err)
+	}
+
+	// Ищем пользователя по email
+	var user User
+	err = s.db.Where("email = ?", userInfo.Email).First(&user).Error
+
+	isNewUser := false
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// Создаем нового пользователя
+			user = User{
+				FullName:        userInfo.FullName,
+				Email:           userInfo.Email,
+				Phone:           &userInfo.Phone,
+				Password:        "", // OAuth пользователи не имеют пароля
+				RoleID:          1,  // default user role
+				Provider:        provider,
+				ProviderID:      &userInfo.ID,
+				IsEmailVerified: true, // OAuth email уже верифицирован
+			}
+
+			if err := s.db.Create(&user).Error; err != nil {
+				return nil, fmt.Errorf("failed to create OAuth user: %w", err)
+			}
+
+			isNewUser = true
+
+			// Отправляем приветственное письмо
+			if err := s.emailService.SendWelcomeEmail(user.Email, user.FullName); err != nil {
+				s.logger.Error("Failed to send welcome email", zap.Error(err))
+			}
+		} else {
+			return nil, fmt.Errorf("database error: %w", err)
+		}
+	}
+
+	// Создаем пару токенов
+	accessToken, refreshToken, err := s.createTokenPair(&user)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create tokens: %w", err)
+	}
+
+	// Обновляем время последнего входа
+	if err := s.db.Model(&user).Update("last_login_at", time.Now()).Error; err != nil {
+		s.logger.Error("Failed to update last login time", zap.Error(err))
+	}
+
+	// Логируем действие
+	s.recordAuditLog(user.ID, "oauth_login", fmt.Sprintf("OAuth login via %s", provider), "", "")
+
+	return &LoginWithProviderResponse{
+		AccessToken:      accessToken,
+		RefreshToken:     refreshToken,
+		AccessExpiresIn:  uint64(s.config.JWT.AccessTTL.Seconds()),
+		RefreshExpiresIn: uint64(s.config.JWT.RefreshTTL.Seconds()),
+		User:             s.mapUserToProfile(&user),
+		IsNewUser:        isNewUser,
+	}, nil
+}
+
+// GetUserProfile возвращает профиль текущего пользователя
+func (s *AuthService) GetUserProfile(ctx context.Context) (*UserProfile, error) {
+	// TODO: Получить userID из контекста (из токена)
+	// Пока возвращаем заглушку
+	return &UserProfile{
+		ID:               "1",
+		FullName:         "Test User",
+		Email:            "test@example.com",
+		Phone:            "",
+		Role:             "user",
+		IsEmailVerified:  true,
+		IsPhoneVerified:  false,
+		TwoFactorEnabled: false,
+		Provider:         "local",
+		LastLoginAt:      time.Now().Format(time.RFC3339),
+		CreatedAt:        time.Now().Format(time.RFC3339),
+	}, nil
+}
+
+// UpdateUserProfile обновляет профиль пользователя
+func (s *AuthService) UpdateUserProfile(ctx context.Context, req UpdateUserProfileRequest) (*UpdateUserProfileResponse, error) {
+	// TODO: Получить userID из контекста (из токена)
+	// Пока возвращаем заглушку
+	return &UpdateUserProfileResponse{
+		User: &UserProfile{
+			ID:               "1",
+			FullName:         req.FullName,
+			Email:            "test@example.com",
+			Phone:            *req.Phone,
+			Role:             "user",
+			IsEmailVerified:  true,
+			IsPhoneVerified:  false,
+			TwoFactorEnabled: false,
+			Provider:         "local",
+			LastLoginAt:      time.Now().Format(time.RFC3339),
+			CreatedAt:        time.Now().Format(time.RFC3339),
+		},
+		Message: "Profile updated successfully",
+	}, nil
+}
+
+// ChangePassword изменяет пароль пользователя
+func (s *AuthService) ChangePassword(ctx context.Context, currentPassword, newPassword, confirmPassword string) (*ChangePasswordResponse, error) {
+	// Проверяем, что пароли совпадают
+	if newPassword != confirmPassword {
+		return nil, fmt.Errorf("passwords do not match")
+	}
+
+	// Валидируем новый пароль
+	if errors := utils.ValidatePassword(newPassword); len(errors) > 0 {
+		return nil, fmt.Errorf("invalid password: %v", errors)
+	}
+
+	// TODO: Получить userID из контекста и проверить текущий пароль
+	// Пока возвращаем заглушку
+	return &ChangePasswordResponse{
+		Message: "Password changed successfully",
+		Success: true,
+	}, nil
+}
+
+// findUserByEmail находит пользователя по email
+func (s *AuthService) findUserByEmail(email string) (*User, error) {
+	var user User
+	err := s.db.Where("email = ?", email).First(&user).Error
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+// Дополнительные типы для новых методов
+
+type RequestPasswordResetResponse struct {
+	Message string
+}
+
+type ResetPasswordResponse struct {
+	Message string
+	Success bool
+}
+
+type EnableTwoFactorResponse struct {
+	QRCodeURL   string
+	SecretKey   string
+	BackupCodes []string
+}
+
+type DisableTwoFactorResponse struct {
+	Message string
+	Success bool
+}
+
+type VerifyTwoFactorResponse struct {
+	AccessToken      string
+	RefreshToken     string
+	AccessExpiresIn  uint64
+	RefreshExpiresIn uint64
+	User             *UserProfile
+}
+
+type LoginWithProviderResponse struct {
+	AccessToken      string
+	RefreshToken     string
+	AccessExpiresIn  uint64
+	RefreshExpiresIn uint64
+	User             *UserProfile
+	IsNewUser        bool
+}
+
+type UpdateUserProfileRequest struct {
+	FullName string
+	Phone    *string
+}
+
+type UpdateUserProfileResponse struct {
+	User    *UserProfile
+	Message string
+}
+
+type ChangePasswordResponse struct {
+	Message string
+	Success bool
 }

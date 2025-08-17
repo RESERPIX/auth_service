@@ -31,5 +31,5 @@ func main() {
 		log.Fatalf("could not login: %v", err)
 	}
 
-	log.Printf("Login response: token=%s, expires_in=%d", resp.AccessToken, resp.ExpiresIn)
+	log.Printf("Login response: token=%s, access_expires_in=%d", resp.AccessToken, resp.AccessExpiresIn)
 }
