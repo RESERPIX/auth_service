@@ -1,0 +1,2 @@
+-- Empty init script for PostgreSQL
+-- Add your initialization SQL commands here if needed

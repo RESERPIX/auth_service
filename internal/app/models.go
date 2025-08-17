@@ -43,6 +43,7 @@ type VerificationCode struct {
 	User      User      `gorm:"foreignKey:UserID"`
 	Code      string    `gorm:"not null"`
 	Type      string    `gorm:"not null"` // email, sms, password_reset, 2fa
+	Purpose   string    `gorm:"not null"` // registration, password_reset, 2fa
 	ExpiresAt time.Time `gorm:"not null"`
 	IsUsed    bool      `gorm:"default:false"`
 	CreatedAt time.Time

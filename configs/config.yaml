@@ -73,6 +73,9 @@ oauth:
 
 security:
   recaptcha_secret: "your-recaptcha-secret-key"
+  recaptcha_site_key: "your-recaptcha-site-key"
+  recaptcha_enabled: true
+  recaptcha_min_score: 0.5
   bcrypt_cost: 12
   max_login_attempts: 5
   login_attempt_window: "15m"
@@ -81,6 +84,17 @@ security:
   max_code_attempts: 3
   rate_limit_requests: 100
   rate_limit_window: "1m"
+  rate_limit_per_minute: 60
+  rate_limit_per_hour: 1000
+  rate_limit_per_day: 10000
+
+middleware:
+  audit_enabled: true
+  audit_log_to_db: true
+  audit_log_to_console: true
+  audit_exclude_methods:
+    - "/grpc.health.v1.Health/Check"
+    - "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo"
 
 logging:
   level: "info" # debug, info, warn, error

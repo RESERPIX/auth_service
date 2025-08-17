@@ -15,10 +15,11 @@ import (
 	"github.com/RESERPIX/auth_service/internal/config"
 	"github.com/RESERPIX/auth_service/internal/db"
 	pb "github.com/RESERPIX/auth_service/internal/pb/proto/auth"
+	"github.com/RESERPIX/auth_service/internal/middleware"
 	"github.com/RESERPIX/auth_service/internal/services"
 	"github.com/RESERPIX/auth_service/pkg/logger"
 
-	"github.com/go-redis/redis/v9"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -59,18 +60,44 @@ func main() {
 	emailService := services.NewEmailService(cfg)
 	smsService := services.NewSMSService(cfg)
 	oauthService := services.NewOAuthService(cfg)
-	authService := services.NewAuthService(dbConn, redisClient, cfg, emailService, smsService, oauthService)
+	
+	// Создание AuthService
+	authService := services.NewAuthService(dbConn, redisClient, cfg, emailService, smsService, oauthService, zapLogger)
 
-	// Создание gRPC сервера
+	// Создание middleware
+	rateLimiter := middleware.NewRateLimiter(redisClient, middleware.RateLimiterConfig{
+		RequestsPerMinute: cfg.Security.RateLimitPerMinute,
+		RequestsPerHour:   cfg.Security.RateLimitPerHour,
+		RequestsPerDay:    cfg.Security.RateLimitPerDay,
+		WindowSize:        cfg.Security.RateLimitWindow,
+	}, zapLogger)
+
+	recaptchaMiddleware := middleware.NewRecaptchaMiddleware(middleware.RecaptchaConfig{
+		SecretKey: cfg.Security.RecaptchaSecret,
+		SiteKey:   cfg.Security.RecaptchaSiteKey,
+		Enabled:   cfg.Security.RecaptchaEnabled,
+		MinScore:  cfg.Security.RecaptchaMinScore,
+	}, zapLogger)
+
+	auditMiddleware := middleware.NewAuditMiddleware(middleware.AuditConfig{
+		Enabled:      cfg.Middleware.AuditEnabled,
+		LogToDB:     cfg.Middleware.AuditLogToDB,
+		LogToConsole: cfg.Middleware.AuditLogToConsole,
+		ExcludeMethods: cfg.Middleware.AuditExcludeMethods,
+	}, zapLogger, dbConn)
+
+	// Создание gRPC сервера с middleware
 	grpcServer := grpc.NewServer(
-		grpc.UnaryInterceptor(loggingInterceptor(zapLogger)),
+		grpc.ChainUnaryInterceptor(
+			loggingInterceptor(zapLogger),
+			rateLimiter.UnaryServerInterceptor(),
+			recaptchaMiddleware.UnaryServerInterceptor(),
+			auditMiddleware.UnaryServerInterceptor(),
+		),
 	)
 
-	// Регистрация сервисов
-	authServer := &app.AuthServer{
-		AuthService: authService,
-		Logger:      zapLogger,
-	}
+	// Создание AuthServer
+	authServer := app.NewAuthServer(authService, zapLogger)
 
 	pb.RegisterAuthServiceServer(grpcServer, authServer)
 
@@ -166,260 +193,5 @@ func loggingInterceptor(logger *zap.Logger) grpc.UnaryServerInterceptor {
 		}
 		
 		return resp, err
-	}
-}
-
-// internal/app/auth_server.go - обновленная версия
-package app
-
-import (
-	"context"
-	"errors"
-
-	pb "github.com/RESERPIX/auth_service/internal/pb/proto/auth"
-	"github.com/RESERPIX/auth_service/internal/services"
-	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
-)
-
-type AuthServer struct {
-	pb.UnimplementedAuthServiceServer
-	AuthService *services.AuthService
-	Logger      *zap.Logger
-}
-
-func (s *AuthServer) Register(ctx context.Context, req *pb.RegisterRequest) (*pb.RegisterResponse, error) {
-	s.Logger.Info("Register request received", zap.String("email", req.Email))
-
-	phone := ""
-	if req.Phone != "" {
-		phone = req.Phone
-	}
-
-	registerReq := services.RegisterRequest{
-		FullName:        req.FullName,
-		Email:           req.Email,
-		Phone:           &phone,
-		Password:        req.Password,
-		ConfirmPassword: req.ConfirmPassword,
-		AcceptTerms:     req.AcceptTerms,
-		RecaptchaToken:  req.RecaptchaToken,
-		ReferralCode:    req.ReferralCode,
-	}
-
-	resp, err := s.AuthService.Register(ctx, registerReq)
-	if err != nil {
-		s.Logger.Error("Registration failed", zap.Error(err))
-		return nil, s.handleError(err)
-	}
-
-	return &pb.RegisterResponse{
-		UserId:               resp.UserID,
-		Message:              resp.Message,
-		RequiresVerification: resp.RequiresVerification,
-		VerificationType:     resp.VerificationType,
-	}, nil
-}
-
-func (s *AuthServer) Login(ctx context.Context, req *pb.LoginRequest) (*pb.LoginResponse, error) {
-	s.Logger.Info("Login request received", zap.String("login", req.Login))
-
-	loginReq := services.LoginRequest{
-		Login:          req.Login,
-		Password:       req.Password,
-		RecaptchaToken: req.RecaptchaToken,
-		RememberMe:     req.RememberMe,
-		DeviceID:       req.DeviceId,
-		UserAgent:      req.UserAgent,
-		IPAddress:      req.IpAddress,
-	}
-
-	resp, err := s.AuthService.Login(ctx, loginReq)
-	if err != nil {
-		s.Logger.Error("Login failed", zap.Error(err))
-		return nil, s.handleError(err)
-	}
-
-	pbResp := &pb.LoginResponse{
-		AccessToken:       resp.AccessToken,
-		RefreshToken:      resp.RefreshToken,
-		AccessExpiresIn:   resp.AccessExpiresIn,
-		RefreshExpiresIn:  resp.RefreshExpiresIn,
-		Requires_2Fa:      resp.Requires2FA,
-		SessionId:         resp.SessionID,
-	}
-
-	if resp.User != nil {
-		pbResp.User = &pb.UserProfile{
-			Id:               resp.User.ID,
-			FullName:         resp.User.FullName,
-			Email:            resp.User.Email,
-			Phone:            resp.User.Phone,
-			Role:             resp.User.Role,
-			IsEmailVerified:  resp.User.IsEmailVerified,
-			IsPhoneVerified:  resp.User.IsPhoneVerified,
-			TwoFactorEnabled: resp.User.TwoFactorEnabled,
-			Provider:         resp.User.Provider,
-			LastLoginAt:      resp.User.LastLoginAt,
-			CreatedAt:        resp.User.CreatedAt,
-		}
-	}
-
-	return pbResp, nil
-}
-
-func (s *AuthServer) RefreshToken(ctx context.Context, req *pb.RefreshTokenRequest) (*pb.RefreshTokenResponse, error) {
-	resp, err := s.AuthService.RefreshToken(ctx, req.RefreshToken)
-	if err != nil {
-		s.Logger.Error("Token refresh failed", zap.Error(err))
-		return nil, s.handleError(err)
-	}
-
-return &pb.RefreshTokenResponse{
-		AccessToken:       resp.AccessToken,
-		RefreshToken:      resp.RefreshToken,
-		AccessExpiresIn:   resp.AccessExpiresIn,
-		RefreshExpiresIn:  resp.RefreshExpiresIn,
-	}, nil
-}
-
-func (s *AuthServer) Logout(ctx context.Context, req *pb.LogoutRequest) (*pb.LogoutResponse, error) {
-	err := s.AuthService.Logout(ctx, req.RefreshToken, req.LogoutAllDevices)
-	if err != nil {
-		s.Logger.Error("Logout failed", zap.Error(err))
-		return nil, s.handleError(err)
-	}
-
-	return &pb.LogoutResponse{
-		Message: "Successfully logged out",
-	}, nil
-}
-
-func (s *AuthServer) SendVerificationCode(ctx context.Context, req *pb.SendVerificationCodeRequest) (*pb.SendVerificationCodeResponse, error) {
-	sendReq := services.SendVerificationCodeRequest{
-		Contact: req.Contact,
-		Type:    req.Type,
-		Purpose: req.Purpose,
-	}
-
-	err := s.AuthService.SendVerificationCode(ctx, sendReq)
-	if err != nil {
-		s.Logger.Error("Send verification code failed", zap.Error(err))
-		return nil, s.handleError(err)
-	}
-
-	return &pb.SendVerificationCodeResponse{
-		Message:     "Verification code sent successfully",
-		ExpiresIn:   300, // 5 минут
-		RateLimited: false,
-	}, nil
-}
-
-func (s *AuthServer) VerifyCode(ctx context.Context, req *pb.VerifyCodeRequest) (*pb.VerifyCodeResponse, error) {
-	verifyReq := services.VerifyCodeRequest{
-		Contact: req.Contact,
-		Code:    req.Code,
-		Type:    req.Type,
-		Purpose: req.Purpose,
-	}
-
-	resp, err := s.AuthService.VerifyCode(ctx, verifyReq)
-	if err != nil {
-		s.Logger.Error("Code verification failed", zap.Error(err))
-		return nil, s.handleError(err)
-	}
-
-	return &pb.VerifyCodeResponse{
-		Success: resp.Success,
-		Message: resp.Message,
-		Token:   resp.Token,
-	}, nil
-}
-
-func (s *AuthServer) RequestPasswordReset(ctx context.Context, req *pb.RequestPasswordResetRequest) (*pb.RequestPasswordResetResponse, error) {
-	// Отправка кода верификации для сброса пароля
-	sendReq := services.SendVerificationCodeRequest{
-		Contact: req.Email,
-		Type:    "email",
-		Purpose: "password_reset",
-	}
-
-	err := s.AuthService.SendVerificationCode(ctx, sendReq)
-	if err != nil {
-		s.Logger.Error("Password reset request failed", zap.Error(err))
-		return nil, s.handleError(err)
-	}
-
-	return &pb.RequestPasswordResetResponse{
-		Message: "Password reset code sent to your email",
-	}, nil
-}
-
-func (s *AuthServer) ResetPassword(ctx context.Context, req *pb.ResetPasswordRequest) (*pb.ResetPasswordResponse, error) {
-	err := s.AuthService.ResetPassword(ctx, req.ResetToken, req.NewPassword, req.ConfirmPassword)
-	if err != nil {
-		s.Logger.Error("Password reset failed", zap.Error(err))
-		return nil, s.handleError(err)
-	}
-
-	return &pb.ResetPasswordResponse{
-		Message: "Password reset successfully",
-		Success: true,
-	}, nil
-}
-
-func (s *AuthServer) ValidateToken(ctx context.Context, req *pb.ValidateTokenRequest) (*pb.ValidateTokenResponse, error) {
-	resp, err := s.AuthService.ValidateToken(ctx, req.AccessToken)
-	if err != nil {
-		return nil, s.handleError(err)
-	}
-
-	pbResp := &pb.ValidateTokenResponse{
-		Valid:       resp.Valid,
-		Permissions: resp.Permissions,
-	}
-
-	if resp.User != nil {
-		pbResp.User = &pb.UserProfile{
-			Id:               resp.User.ID,
-			FullName:         resp.User.FullName,
-			Email:            resp.User.Email,
-			Phone:            resp.User.Phone,
-			Role:             resp.User.Role,
-			IsEmailVerified:  resp.User.IsEmailVerified,
-			IsPhoneVerified:  resp.User.IsPhoneVerified,
-			TwoFactorEnabled: resp.User.TwoFactorEnabled,
-			Provider:         resp.User.Provider,
-			LastLoginAt:      resp.User.LastLoginAt,
-			CreatedAt:        resp.User.CreatedAt,
-		}
-	}
-
-	return pbResp, nil
-}
-
-// Обработка ошибок и преобразование в gRPC статусы
-func (s *AuthServer) handleError(err error) error {
-	switch {
-	case errors.Is(err, services.ErrInvalidCredentials):
-		return status.Error(codes.Unauthenticated, "Invalid credentials")
-	case errors.Is(err, services.ErrUserNotFound):
-		return status.Error(codes.NotFound, "User not found")
-	case errors.Is(err, services.ErrUserExists):
-		return status.Error(codes.AlreadyExists, "User already exists")
-	case errors.Is(err, services.ErrInvalidCode):
-		return status.Error(codes.InvalidArgument, "Invalid verification code")
-	case errors.Is(err, services.ErrCodeExpired):
-		return status.Error(codes.DeadlineExceeded, "Verification code expired")
-	case errors.Is(err, services.ErrTooManyAttempts):
-		return status.Error(codes.ResourceExhausted, "Too many attempts")
-	case errors.Is(err, services.ErrInvalidToken):
-		return status.Error(codes.Unauthenticated, "Invalid token")
-	case errors.Is(err, services.ErrTokenExpired):
-		return status.Error(codes.Unauthenticated, "Token expired")
-	default:
-		s.Logger.Error("Unhandled error", zap.Error(err))
-		return status.Error(codes.Internal, "Internal server error")
 	}
 }

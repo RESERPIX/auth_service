@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "name": "auth_gateway",
+  "port": 8090,
+  "endpoints": [
+    {
+      "endpoint": "/__health",
+      "method": "GET",
+      "output_encoding": "no-op",
+      "backend": [
+        {
+          "host": ["http://localhost:50051"],
+          "url_pattern": "/"
+        }
+      ],
+      "extra_config": {}
+    }
+  ]
+}

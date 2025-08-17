@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"net/smtp"
 	"net/url"
@@ -287,13 +288,11 @@ func (s *EmailService) sendEmail(to, subject, body string) error {
 
 type SMSService struct {
 	config *config.Config
-	client *resty.Client
 }
 
 func NewSMSService(config *config.Config) *SMSService {
 	return &SMSService{
 		config: config,
-		client: resty.New(),
 	}
 }
 
@@ -345,14 +344,11 @@ func (s *SMSService) sendSMSRu(phone, message string) error {
 	}
 
 	// Отправка запроса
-	resp, err := s.client.R().
-		SetHeader("Content-Type", "application/x-www-form-urlencoded").
-		SetBody(params.Encode()).
-		Post("https://sms.ru/sms/send")
-
+	resp, err := http.PostForm("https://sms.ru/sms/send", params)
 	if err != nil {
 		return fmt.Errorf("failed to send SMS: %w", err)
 	}
+	defer resp.Body.Close()
 
 	// Парсинг ответа
 	var result struct {
@@ -365,7 +361,12 @@ func (s *SMSService) sendSMSRu(phone, message string) error {
 		} `json:"sms"`
 	}
 
-	if err := json.Unmarshal(resp.Body(), &result); err != nil {
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
 		return fmt.Errorf("failed to parse SMS response: %w", err)
 	}
 
